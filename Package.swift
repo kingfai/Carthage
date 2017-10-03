@@ -18,8 +18,8 @@ let package = Package(
         .package(url: "https://github.com/thoughtbot/Argo.git", from: "4.1.0"),
         .package(url: "https://github.com/thoughtbot/Curry.git", from: "3.0.0"),
         .package(url: "https://github.com/thoughtbot/Runes.git", from: "4.0.1"),
-        .package(url: "https://github.com/Quick/Quick.git", .revision("3665ae9")),
-        .package(url: "https://github.com/Quick/Nimble.git", .revision("a63252b")),
+        .package(url: "https://github.com/Quick/Quick.git", from: "1.2.0"),
+        .package(url: "https://github.com/Quick/Nimble.git", from: "7.0.2"),
     ],
     targets: [
         .target(
