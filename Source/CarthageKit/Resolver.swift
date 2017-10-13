@@ -18,6 +18,8 @@ public protocol ResolverProtocol {
 
 /// Responsible for resolving acyclic dependency graphs.
 public struct Resolver: ResolverProtocol {
+	private static var megsAllocated: Int64 = 0
+	private static var megsAllocatedFromMethod = [String: Int64]()
 	private let versionsForDependency: (Dependency) -> SignalProducer<PinnedVersion, CarthageError>
 	private let resolvedGitReference: (Dependency, String) -> SignalProducer<PinnedVersion, CarthageError>
 	private let dependenciesForDependency: (Dependency, PinnedVersion) -> SignalProducer<(Dependency, VersionSpecifier), CarthageError>
@@ -125,6 +127,12 @@ public struct Resolver: ResolverProtocol {
 						if nodes.isEmpty {
 							return SignalProducer(error: CarthageError.requiredVersionNotFound(dependency.key, dependency.value))
 						} else {
+							print("depdendency.key: \(dependency.key)")
+							print("Number of nodes: \(nodes.count)")
+							//nodes.forEach {
+							//	print("\t \($0)")
+							//}
+							print("----------------------\n")
 							return SignalProducer(nodes)
 						}
 					}
@@ -133,6 +141,33 @@ public struct Resolver: ResolverProtocol {
 			.permute()
 	}
 
+	private func mach_task_self() -> task_t {
+		return mach_task_self_
+	}
+	private func get_memory_used() -> UInt64 {
+		var info = mach_task_basic_info()
+		var count = mach_msg_type_number_t(MemoryLayout.size(ofValue:info)/MemoryLayout<integer_t>.size)
+		
+		let kerr: kern_return_t = withUnsafeMutablePointer(to:&info) { infoPtr in
+	
+			return infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { (machPtr: UnsafeMutablePointer<integer_t>) in
+				return task_info(
+					mach_task_self(),
+					task_flavor_t(MACH_TASK_BASIC_INFO),
+					machPtr,
+					&count)
+				
+			}
+		}
+		if kerr == KERN_SUCCESS {
+			return info.resident_size / (1024*1024)
+		}
+		else {
+			print("Error fetching free memory")
+			return 0
+		}
+	}
+	
 	/// Sends all possible permutations of `inputGraph` oriented around the
 	/// dependencies of `node`.
 	///
@@ -142,7 +177,10 @@ public struct Resolver: ResolverProtocol {
 	private func graphsForDependenciesOfNode(_ node: DependencyNode, basedOnGraph inputGraph: DependencyGraph) -> SignalProducer<DependencyGraph, CarthageError> {
 		let scheduler = QueueScheduler(qos: .default, name: "org.carthage.CarthageKit.Resolver.graphsForDependenciesOfNode")
 
-		return dependenciesForDependency(node.dependency, node.proposedVersion)
+		let before_used = get_memory_used()
+
+		let signal_producer =
+		 dependenciesForDependency(node.dependency, node.proposedVersion)
 			.start(on: scheduler)
 			.reduce(into: [:]) { result, dependency in
 				result[dependency.0] = dependency.1
@@ -150,11 +188,27 @@ public struct Resolver: ResolverProtocol {
 			.concat(value: [:])
 			.take(first: 1)
 			.observe(on: scheduler)
-			.flatMap(.concat) { dependencies in
+			.flatMap(.concat) { dependencies ->  SignalProducer<DependencyGraph, CarthageError> in
+				self.trackMemUsed(before_used: before_used, description: node.description, method: "graphsForDependenciesOfNode()")
 				return self.graphs(for: dependencies, dependencyOf: node, basedOnGraph: inputGraph)
 			}
+
+		return signal_producer
 	}
 
+	private func trackMemUsed(before_used : UInt64, description: String, method: String) {
+		let after = self.get_memory_used()
+		let result = Int64(after) - Int64(before_used)
+		if let current = Resolver.megsAllocatedFromMethod[method] {
+			Resolver.megsAllocatedFromMethod[method] = current + result
+		}
+		else {
+			Resolver.megsAllocatedFromMethod[method] = result
+		}
+		print("###### mem used in \(method): \(result)M for \(description); total: \(Resolver.megsAllocatedFromMethod[method] as Optional)M")
+
+	}
+	
 	/// Recursively permutes `dependencies` and all dependencies thereof,
 	/// attaching each permutation to `inputGraph` as a dependency of the
 	/// specified node (or as a root otherwise).
@@ -165,8 +219,15 @@ public struct Resolver: ResolverProtocol {
 		dependencyOf: DependencyNode?,
 		basedOnGraph inputGraph: DependencyGraph
 	) -> SignalProducer<DependencyGraph, CarthageError> {
+		let before_used = get_memory_used()
+		
 		return nodePermutations(for: dependencies)
 			.flatMap(.concat) { (nodes: [DependencyNode]) -> SignalProducer<Signal<DependencyGraph, CarthageError>.Event, NoError> in
+				var desc = ""
+				if let depedencyValue = dependencyOf {
+					desc = depedencyValue.description
+				}
+				self.trackMemUsed(before_used: before_used, description: desc, method: "graphs()")
 				return self
 					.graphs(for: nodes, dependencyOf: dependencyOf, basedOnGraph: inputGraph)
 					.materialize()
@@ -187,6 +248,7 @@ public struct Resolver: ResolverProtocol {
 		basedOnGraph inputGraph: DependencyGraph
 	) -> SignalProducer<DependencyGraph, CarthageError> {
 		let scheduler = QueueScheduler(qos: .default, name: "org.carthage.CarthageKit.Resolver.graphs")
+		let before_used = get_memory_used()
 
 		return SignalProducer<(DependencyGraph, [DependencyNode]), CarthageError>
 			{ () -> Result<(DependencyGraph, [DependencyNode]), CarthageError> in
@@ -205,7 +267,12 @@ public struct Resolver: ResolverProtocol {
 					.permute()
 					.flatMap(.concat) { graphs -> SignalProducer<Signal<DependencyGraph, CarthageError>.Event, NoError> in
 						return SignalProducer<DependencyGraph, CarthageError>
-							{
+							{ () -> in
+								var desc = ""
+								if let depedencyValue = dependencyOf {
+									desc = depedencyValue.description
+								}
+								self.trackMemUsed(before_used: before_used, description: desc, method: "graphs2()")
 								mergeGraphs([ inputGraph ] + graphs)
 							}
 							.materialize()
@@ -473,6 +540,9 @@ private func mergeGraphs
 
 /// A node in, or being considered for, an acyclic dependency graph.
 private final class DependencyNode {
+	
+	static var nodeCount = 0
+	
 	/// The dependency that this node refers to.
 	let dependency: Dependency
 
@@ -502,6 +572,8 @@ private final class DependencyNode {
 		self.dependency = dependency
 		self.proposedVersion = proposedVersion
 		self.versionSpecifier = versionSpecifier
+		DependencyNode.nodeCount += 1
+		print ("### nodeCount: \(DependencyNode.nodeCount)")
 	}
 }
 
