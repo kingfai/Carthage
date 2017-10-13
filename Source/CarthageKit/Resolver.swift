@@ -248,7 +248,7 @@ public struct Resolver: ResolverProtocol {
 		basedOnGraph inputGraph: DependencyGraph
 	) -> SignalProducer<DependencyGraph, CarthageError> {
 		let scheduler = QueueScheduler(qos: .default, name: "org.carthage.CarthageKit.Resolver.graphs")
-		let before_used = get_memory_used()
+		//let before_used = get_memory_used()
 
 		return SignalProducer<(DependencyGraph, [DependencyNode]), CarthageError>
 			{ () -> Result<(DependencyGraph, [DependencyNode]), CarthageError> in
@@ -267,12 +267,11 @@ public struct Resolver: ResolverProtocol {
 					.permute()
 					.flatMap(.concat) { graphs -> SignalProducer<Signal<DependencyGraph, CarthageError>.Event, NoError> in
 						return SignalProducer<DependencyGraph, CarthageError>
-							{ () -> in
-								var desc = ""
-								if let depedencyValue = dependencyOf {
+							{
+								/*if let depedencyValue = dependencyOf {
 									desc = depedencyValue.description
 								}
-								self.trackMemUsed(before_used: before_used, description: desc, method: "graphs2()")
+								self.trackMemUsed(before_used: before_used, description: desc, method: "graphs2()")*/
 								mergeGraphs([ inputGraph ] + graphs)
 							}
 							.materialize()
